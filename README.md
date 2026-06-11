@@ -1,4 +1,4 @@
-<![CDATA[# 📊 LedgerFlow — Sales Management System
+# 📊 LedgerFlow — Sales Management System
 
 A full-stack sales management application built with **Java Spring Boot**, **Oracle Database**, and **vanilla HTML/CSS/JS**. It features role-based access control, real-time inventory management through database triggers, and comprehensive sales analytics.
 
@@ -226,4 +226,3 @@ CANCELLED    CANCELLED
 ## 📜 License
 
 This project is for educational purposes.
-]]>
