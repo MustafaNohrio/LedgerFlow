@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Dashboard - LedgerFlow</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-content">
+    <div class="top-bar">
+      <h1>Dashboard</h1>
+      <span class="text-muted" id="greeting"></span>
+    </div>
+    <div class="page-body">
+      <div id="stats-row" class="stats-row">
+        <div class="stat-card blue"><div class="s-label">Total Orders</div><div class="s-value" id="s-orders">—</div></div>
+        <div class="stat-card orange"><div class="s-label">Pending Orders</div><div class="s-value" id="s-pending">—</div></div>
+        <div class="stat-card green"><div class="s-label">Revenue This Month</div><div class="s-value" id="s-revenue" style="font-size:1.3rem">—</div></div>
+        <div class="stat-card purple"><div class="s-label">Total Customers</div><div class="s-value" id="s-customers">—</div></div>
+        <div class="stat-card blue"><div class="s-label">Total Products</div><div class="s-value" id="s-products">—</div></div>
+        <div class="stat-card red"><div class="s-label">Low Stock Items</div><div class="s-value" id="s-lowstock">—</div></div>
+      </div>
+
+      <div id="analytics">
+        <div class="two-col">
+          <div class="card">
+            <div class="card-header"><h2>Orders by Status</h2></div>
+            <div class="card-body" id="status-panel">
+              <div class="empty-state"><div class="spinner"></div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h2>Monthly Sales</h2></div>
+            <div class="card-body" id="chart-panel">
+              <div class="empty-state"><div class="spinner"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card gap-top">
+          <div class="card-header">
+            <h2>Low Stock Alert</h2>
+            <a href="reports.html" class="btn btn-ghost btn-sm">View Report →</a>
+          </div>
+          <div class="card-body" id="lowstock-panel">
+            <div class="empty-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="restricted-note" style="display:none" class="alert alert-info gap-top">
+        Full analytics are available to Admin and Manager accounts.
+      </div>
+    </div>
+  </div>
+</div>
+<script src="script.js"></script>
+<script>
+requireAuth();
+buildSidebar();
+
+const user = getUser();
+const now = new Date();
+const hour = now.getHours();
+const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+document.getElementById('greeting').textContent = greet + ', ' + user.fullName;
+
+const canViewReports = hasRole('ADMIN','MANAGER');
+
+if (!canViewReports) {
+  document.getElementById('analytics').style.display = 'none';
+  document.getElementById('restricted-note').style.display = 'block';
+}
+
+async function loadDashboard() {
+  if (!canViewReports) {
+    // just load basic counts
+    try {
+      const [orders, customers] = await Promise.all([
+        api('/orders?page=0&size=1'), api('/customers?page=0&size=1')
+      ]);
+      document.getElementById('s-orders').textContent    = orders.totalElements ?? '—';
+      document.getElementById('s-customers').textContent = customers.totalElements ?? '—';
+    } catch(e) {}
+    return;
+  }
+
+  try {
+    const d = await api('/orders/dashboard');
+    document.getElementById('s-orders').textContent    = d.totalOrders ?? 0;
+    document.getElementById('s-pending').textContent   = d.pendingOrders ?? 0;
+    document.getElementById('s-customers').textContent = d.totalCustomers ?? 0;
+    document.getElementById('s-products').textContent  = d.totalProducts ?? 0;
+    document.getElementById('s-lowstock').textContent  = d.lowStockItems ?? 0;
+    document.getElementById('s-revenue').textContent   = money(d.revenueThisMonth ?? 0);
+
+    // Status panel
+    const sp = document.getElementById('status-panel');
+    const rows = d.ordersByStatus ?? [];
+    sp.innerHTML = rows.length === 0
+      ? '<div class="empty-state"><p>No orders yet</p></div>'
+      : rows.map(r => `
+          <div class="flex-between" style="padding:9px 0;border-bottom:1px solid var(--gray-100)">
+            ${statusBadge(r[0])}<strong>${r[1]}</strong>
+          </div>`).join('');
+
+    // Monthly bar chart
+    const cp = document.getElementById('chart-panel');
+    const ms = d.monthlySales ?? [];
+    if (!ms.length) {
+      cp.innerHTML = '<div class="empty-state"><p>No data yet for this year</p></div>';
+    } else {
+      const max = Math.max(...ms.map(r => Number(r[3]) || 0));
+      cp.innerHTML = `<div class="bar-chart">${ms.map(r => {
+        const rev = Number(r[3]) || 0;
+        const h   = max > 0 ? Math.max(4, Math.round(rev / max * 120)) : 4;
+        return `<div class="bar-col">
+          <div class="bar-val">${rev >= 1000 ? Math.round(rev/1000)+'k' : rev}</div>
+          <div class="bar" style="height:${h}px" title="${r[0]}: ${money(rev)}"></div>
+          <div class="bar-lbl">${r[0]}</div>
+        </div>`;
+      }).join('')}</div>`;
+    }
+
+    // Low stock panel
+    const lp = document.getElementById('lowstock-panel');
+    const ls = d.lowStockItems > 0 ? (await api('/products/low-stock')) : [];
+    if (!ls.length) {
+      lp.innerHTML = '<p style="color:var(--green);font-weight:500">✓ All products are sufficiently stocked</p>';
+    } else {
+      lp.innerHTML = `<div class="table-wrap"><table>
+        <thead><tr><th>Product</th><th>SKU</th><th>Category</th><th>Stock</th></tr></thead>
+        <tbody>${ls.map(p => `
+          <tr>
+            <td>${p.productName}</td>
+            <td style="font-family:monospace">${p.skuCode}</td>
+            <td>${p.category?.categoryName || '—'}</td>
+            <td>${stockBadge(p.stockQuantity)}</td>
+          </tr>`).join('')}
+        </tbody></table></div>`;
+    }
+  } catch(e) {
+    toast('Could not load dashboard: ' + e.message, 'error');
+  }
+}
+
+loadDashboard();
+</script>
+</body>
+</html>

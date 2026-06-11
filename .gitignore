@@ -1,0 +1,30 @@
+# === IDE & Editor ===
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+.project
+.classpath
+.settings/
+
+# === OS generated ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Java / Maven ===
+backend/target/
+*.class
+*.jar
+*.war
+*.log
+hs_err_pid*
+
+# === Node (if any) ===
+node_modules/
+
+# === Misc ===
+*.tmp
+*.bak
+*.swp

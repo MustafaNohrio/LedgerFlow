@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Products - LedgerFlow</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-content">
+    <div class="top-bar">
+      <h1>Products</h1>
+      <div class="flex-gap">
+        <a href="products.html#export" onclick="exportCsv()" class="btn btn-ghost btn-sm">⬇ Export CSV</a>
+        <button id="add-btn" class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add Product</button>
+      </div>
+    </div>
+    <div class="page-body">
+
+      <!-- Filters -->
+      <div class="filter-bar">
+        <input id="f-search" type="text" placeholder="Search by name or SKU..." oninput="debounceLoad()"/>
+        <select id="f-category" onchange="loadProducts(0)">
+          <option value="">All Categories</option>
+        </select>
+        <select id="f-active" onchange="loadProducts(0)">
+          <option value="">All Status</option>
+          <option value="Y">Active</option>
+          <option value="N">Inactive</option>
+        </select>
+        <div class="spacer"></div>
+        <span class="text-muted" id="result-count"></span>
+      </div>
+
+      <!-- Table -->
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>Product Name</th><th>SKU</th><th>Category</th>
+                <th>Price</th><th>Stock</th><th>Status</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="products-table">
+              <tr class="loading-row"><td colspan="8"><div class="spinner"></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:12px 18px;border-top:1px solid var(--gray-100)">
+          <div class="pagination" id="prod-pagination"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal-overlay" id="prod-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="modal-title">Add Product</h2>
+      <button class="close-btn" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="modal-msg"></div>
+      <input type="hidden" id="edit-id"/>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Product Name *</label>
+          <input id="f-name" type="text" placeholder="e.g. Samsung Galaxy A55"/>
+        </div>
+        <div class="form-group">
+          <label>SKU Code *</label>
+          <input id="f-sku" type="text" placeholder="e.g. SMSG-A55"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Category *</label>
+          <select id="f-cat"><option value="">Select...</option></select>
+        </div>
+        <div class="form-group">
+          <label>Unit Price (PKR) *</label>
+          <input id="f-price" type="number" min="1" step="0.01"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Stock Quantity</label>
+          <input id="f-stock" type="number" min="0" value="0"/>
+        </div>
+        <div class="form-group">
+          <label>Status</label>
+          <select id="f-status">
+            <option value="Y">Active</option>
+            <option value="N">Inactive</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="save-btn" onclick="saveProduct()">Save Product</button>
+    </div>
+  </div>
+</div>
+
+<script src="script.js"></script>
+<script>
+requireAuth();
+buildSidebar();
+
+const canEdit = hasRole('ADMIN','MANAGER');
+if (!canEdit) document.getElementById('add-btn').style.display = 'none';
+
+let debounceTimer;
+function debounceLoad() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => loadProducts(0), 300);
+}
+
+async function loadCategories() {
+  try {
+    const cats = await api('/products/categories');
+    const opts = cats.map(c => `<option value="${c.categoryId}">${c.categoryName}</option>`).join('');
+    document.getElementById('f-category').innerHTML = '<option value="">All Categories</option>' + opts;
+    document.getElementById('f-cat').innerHTML = '<option value="">Select category...</option>' + opts;
+  } catch(e) {}
+}
+
+async function loadProducts(page = 0) {
+  const q        = document.getElementById('f-search').value.trim();
+  const catId    = document.getElementById('f-category').value;
+  const active   = document.getElementById('f-active').value;
+  const tbody    = document.getElementById('products-table');
+  tbody.innerHTML = '<tr class="loading-row"><td colspan="8"><div class="spinner"></div></td></tr>';
+
+  try {
+    let url = `/products?page=${page}&size=20`;
+    if (q)      url += `&q=${encodeURIComponent(q)}`;
+    if (catId)  url += `&categoryId=${catId}`;
+    if (active) url += `&active=${active}`;
+
+    const data = await api(url);
+    document.getElementById('result-count').textContent = data.totalElements + ' products';
+
+    if (!data.content?.length) {
+      tbody.innerHTML = '<tr><td colspan="8"><div class="empty-state"><div class="icon">📦</div><p>No products found</p></div></td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.content.map(p => `
+      <tr>
+        <td class="text-muted">${p.productId}</td>
+        <td><strong>${p.productName}</strong></td>
+        <td style="font-family:monospace;font-size:.78rem">${p.skuCode}</td>
+        <td>${p.category?.categoryName || '—'}</td>
+        <td style="font-weight:600">${money(p.unitPrice)}</td>
+        <td>${stockBadge(p.stockQuantity)}</td>
+        <td><span class="badge badge-${p.isActive === 'Y' ? 'y' : 'n'}">${p.isActive === 'Y' ? 'Active' : 'Inactive'}</span></td>
+        <td>
+          ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick='openEditModal(${JSON.stringify(p)})'>Edit</button>` : '—'}
+        </td>
+      </tr>`).join('');
+
+    renderPagination('prod-pagination', data, 'loadProducts');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="8"><div class="alert alert-error">${e.message}</div></td></tr>`;
+  }
+}
+
+function openAddModal() {
+  document.getElementById('modal-title').textContent = 'Add Product';
+  document.getElementById('edit-id').value = '';
+  document.getElementById('modal-msg').innerHTML = '';
+  ['f-name','f-sku','f-price','f-stock'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('f-stock').value = '0';
+  document.getElementById('f-status').value = 'Y';
+  document.getElementById('prod-modal').classList.add('open');
+}
+
+function openEditModal(p) {
+  document.getElementById('modal-title').textContent = 'Edit Product';
+  document.getElementById('edit-id').value = p.productId;
+  document.getElementById('f-name').value  = p.productName;
+  document.getElementById('f-sku').value   = p.skuCode;
+  document.getElementById('f-price').value = p.unitPrice;
+  document.getElementById('f-stock').value = p.stockQuantity;
+  document.getElementById('f-status').value = p.isActive;
+  document.getElementById('f-cat').value   = p.category?.categoryId || '';
+  document.getElementById('modal-msg').innerHTML = '';
+  document.getElementById('prod-modal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('prod-modal').classList.remove('open');
+}
+
+async function saveProduct() {
+  const msg    = document.getElementById('modal-msg');
+  const editId = document.getElementById('edit-id').value;
+  const name   = document.getElementById('f-name').value.trim();
+  const sku    = document.getElementById('f-sku').value.trim();
+  const catId  = document.getElementById('f-cat').value;
+  const price  = parseFloat(document.getElementById('f-price').value);
+  const stock  = parseInt(document.getElementById('f-stock').value) || 0;
+  const status = document.getElementById('f-status').value;
+
+  msg.innerHTML = '';
+  if (!name || !sku || !catId || !price || price <= 0) {
+    msg.innerHTML = '<div class="alert alert-error">Please fill in all required fields. Price must be > 0.</div>';
+    return;
+  }
+
+  const body = { productName: name, skuCode: sku, unitPrice: price,
+                 stockQuantity: stock, isActive: status,
+                 category: { categoryId: parseInt(catId) } };
+
+  const btn = document.getElementById('save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  try {
+    if (editId) {
+      await api('/products/' + editId, { method: 'PUT', body: JSON.stringify(body) });
+      toast('Product updated', 'success');
+    } else {
+      await api('/products', { method: 'POST', body: JSON.stringify(body) });
+      toast('Product added', 'success');
+    }
+    closeModal();
+    loadProducts(0);
+  } catch(e) {
+    msg.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save Product';
+  }
+}
+
+async function exportCsv() {
+  window.location.href = API + '/products/export/csv';
+}
+
+loadCategories();
+loadProducts(0);
+</script>
+</body>
+</html>

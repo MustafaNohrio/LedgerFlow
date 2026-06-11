@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Customers - LedgerFlow</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-content">
+    <div class="top-bar">
+      <h1>Customers</h1>
+      <div class="flex-gap">
+        <button class="btn btn-ghost btn-sm" onclick="window.location.href=API+'/customers/export/csv'">⬇ Export CSV</button>
+        <button id="add-btn" class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add Customer</button>
+      </div>
+    </div>
+    <div class="page-body">
+
+      <div class="filter-bar">
+        <input id="f-search" type="text" placeholder="Search by name..." oninput="debounceLoad()"/>
+        <input id="f-city" type="text" placeholder="Filter by city..." oninput="debounceLoad()"/>
+        <div class="spacer"></div>
+        <span class="text-muted" id="result-count"></span>
+      </div>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>#</th><th>Name</th><th>Email</th><th>Phone</th><th>City</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="cust-table">
+              <tr class="loading-row"><td colspan="6"><div class="spinner"></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:12px 18px;border-top:1px solid var(--gray-100)">
+          <div class="pagination" id="cust-pagination"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal-overlay" id="cust-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="modal-title">Add Customer</h2>
+      <button class="close-btn" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="modal-msg"></div>
+      <input type="hidden" id="edit-id"/>
+      <div class="form-row">
+        <div class="form-group">
+          <label>First Name *</label>
+          <input id="f-first" type="text" placeholder="Ahmed"/>
+        </div>
+        <div class="form-group">
+          <label>Last Name *</label>
+          <input id="f-last" type="text" placeholder="Khan"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Email</label>
+        <input id="f-email" type="email" placeholder="ahmed@example.com"/>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Phone</label>
+          <input id="f-phone" type="text" placeholder="0300-1234567"/>
+        </div>
+        <div class="form-group">
+          <label>City</label>
+          <input id="f-city-input" type="text" placeholder="Karachi"/>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="save-btn" onclick="saveCustomer()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="script.js"></script>
+<script>
+requireAuth();
+buildSidebar();
+
+const canEdit = hasRole('ADMIN','MANAGER','SALES_AGENT');
+if (!canEdit) document.getElementById('add-btn').style.display = 'none';
+
+let debounceTimer;
+function debounceLoad() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => loadCustomers(0), 300);
+}
+
+async function loadCustomers(page = 0) {
+  const q    = document.getElementById('f-search').value.trim();
+  const city = document.getElementById('f-city').value.trim();
+  const tbody = document.getElementById('cust-table');
+  tbody.innerHTML = '<tr class="loading-row"><td colspan="6"><div class="spinner"></div></td></tr>';
+
+  try {
+    let url = `/customers?page=${page}&size=20`;
+    if (q)    url += `&q=${encodeURIComponent(q)}`;
+    if (city) url += `&city=${encodeURIComponent(city)}`;
+
+    const data = await api(url);
+    document.getElementById('result-count').textContent = data.totalElements + ' customers';
+
+    if (!data.content?.length) {
+      tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><div class="icon">👥</div><p>No customers found</p></div></td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.content.map(c => `
+      <tr>
+        <td class="text-muted">${c.customerId}</td>
+        <td><strong>${c.firstName} ${c.lastName}</strong></td>
+        <td>${c.emailAddress || '—'}</td>
+        <td>${c.phoneNumber || '—'}</td>
+        <td>${c.cityName || '—'}</td>
+        <td>
+          ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick='openEditModal(${JSON.stringify(c)})'>Edit</button>` : ''}
+          <a href="orders.html?customerId=${c.customerId}" class="btn btn-ghost btn-sm">Orders</a>
+        </td>
+      </tr>`).join('');
+
+    renderPagination('cust-pagination', data, 'loadCustomers');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="alert alert-error">${e.message}</div></td></tr>`;
+  }
+}
+
+function openAddModal() {
+  document.getElementById('modal-title').textContent = 'Add Customer';
+  document.getElementById('edit-id').value = '';
+  document.getElementById('modal-msg').innerHTML = '';
+  ['f-first','f-last','f-email','f-phone','f-city-input'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('cust-modal').classList.add('open');
+}
+
+function openEditModal(c) {
+  document.getElementById('modal-title').textContent = 'Edit Customer';
+  document.getElementById('edit-id').value       = c.customerId;
+  document.getElementById('f-first').value       = c.firstName;
+  document.getElementById('f-last').value        = c.lastName;
+  document.getElementById('f-email').value       = c.emailAddress || '';
+  document.getElementById('f-phone').value       = c.phoneNumber  || '';
+  document.getElementById('f-city-input').value  = c.cityName     || '';
+  document.getElementById('modal-msg').innerHTML = '';
+  document.getElementById('cust-modal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('cust-modal').classList.remove('open');
+}
+
+async function saveCustomer() {
+  const msg    = document.getElementById('modal-msg');
+  const editId = document.getElementById('edit-id').value;
+  const first  = document.getElementById('f-first').value.trim();
+  const last   = document.getElementById('f-last').value.trim();
+  const email  = document.getElementById('f-email').value.trim();
+  const phone  = document.getElementById('f-phone').value.trim();
+  const city   = document.getElementById('f-city-input').value.trim();
+
+  msg.innerHTML = '';
+  if (!first || !last) {
+    msg.innerHTML = '<div class="alert alert-error">First name and last name are required.</div>';
+    return;
+  }
+
+  const body = { firstName: first, lastName: last, emailAddress: email || null,
+                 phoneNumber: phone || null, cityName: city || null };
+
+  const btn = document.getElementById('save-btn');
+  btn.disabled = true; btn.textContent = 'Saving...';
+
+  try {
+    if (editId) {
+      await api('/customers/' + editId, { method: 'PUT', body: JSON.stringify(body) });
+      toast('Customer updated', 'success');
+    } else {
+      await api('/customers', { method: 'POST', body: JSON.stringify(body) });
+      toast('Customer added', 'success');
+    }
+    closeModal();
+    loadCustomers(0);
+  } catch(e) {
+    msg.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save';
+  }
+}
+
+// Pre-fill customer filter if coming from orders page link
+const params = new URLSearchParams(location.search);
+if (params.get('customerId')) {
+  // just load all; orders page handles the actual filter
+}
+
+loadCustomers(0);
+</script>
+</body>
+</html>

@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Orders - LedgerFlow</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-content">
+    <div class="top-bar">
+      <h1>Orders</h1>
+      <div class="flex-gap">
+        <button class="btn btn-ghost btn-sm" onclick="window.location.href=API+'/orders/export/csv'">⬇ Export CSV</button>
+        <button id="place-btn" class="btn btn-primary btn-sm" onclick="openOrderModal()">+ New Order</button>
+      </div>
+    </div>
+    <div class="page-body">
+
+      <!-- Filters -->
+      <div class="filter-bar">
+        <select id="f-status" onchange="loadOrders(0)">
+          <option value="">All Statuses</option>
+          <option>PENDING</option><option>CONFIRMED</option>
+          <option>SHIPPED</option><option>DELIVERED</option><option>CANCELLED</option>
+        </select>
+        <input id="f-from" type="date" title="From date" onchange="loadOrders(0)"/>
+        <input id="f-to"   type="date" title="To date"   onchange="loadOrders(0)"/>
+        <input id="f-customer" type="number" placeholder="Customer ID" style="width:130px" onchange="loadOrders(0)"/>
+        <button class="btn btn-ghost btn-sm" onclick="clearFilters()">Clear</button>
+        <div class="spacer"></div>
+        <span class="text-muted" id="result-count"></span>
+      </div>
+
+      <!-- Orders table -->
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>#</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="orders-table">
+              <tr class="loading-row"><td colspan="7"><div class="spinner"></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:12px 18px;border-top:1px solid var(--gray-100)">
+          <div class="pagination" id="ord-pagination"></div>
+        </div>
+      </div>
+
+      <!-- Order detail panel (hidden by default) -->
+      <div class="card gap-top" id="detail-card" style="display:none">
+        <div class="card-header">
+          <h2 id="detail-title">Order Details</h2>
+          <button class="close-btn" onclick="closeDetail()">✕</button>
+        </div>
+        <div class="card-body" id="detail-body"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- New Order Modal -->
+<div class="modal-overlay" id="order-modal">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-header">
+      <h2>New Order</h2>
+      <button class="close-btn" onclick="closeOrderModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="order-msg"></div>
+      <div class="form-group">
+        <label>Customer *</label>
+        <select id="o-customer"><option value="">Loading...</option></select>
+      </div>
+      <div class="form-group">
+        <label>Add Product</label>
+        <div class="flex-gap">
+          <select id="o-product" style="flex:1"><option value="">Select product...</option></select>
+          <button class="btn btn-ghost btn-sm" onclick="addLine()">+ Add</button>
+        </div>
+      </div>
+      <div id="order-lines"></div>
+      <div id="order-total" class="total-line" style="display:none">
+        <span class="t-label">Order Total</span>
+        <span class="t-value" id="total-val">PKR 0</span>
+      </div>
+      <div class="form-group mt-2">
+        <label>Remarks</label>
+        <textarea id="o-remarks" placeholder="Delivery notes, etc."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeOrderModal()">Cancel</button>
+      <button class="btn btn-success" id="place-order-btn" onclick="placeOrder()">Place Order</button>
+    </div>
+  </div>
+</div>
+
+<!-- Payment Modal -->
+<div class="modal-overlay" id="pay-modal">
+  <div class="modal" style="max-width:380px">
+    <div class="modal-header">
+      <h2 id="pay-title">Record Payment</h2>
+      <button class="close-btn" onclick="closePayModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="pay-msg"></div>
+      <div class="form-group">
+        <label>Amount (PKR) *</label>
+        <input id="pay-amount" type="number" min="1" step="0.01"/>
+      </div>
+      <div class="form-group">
+        <label>Payment Method *</label>
+        <select id="pay-method">
+          <option value="CASH">Cash</option>
+          <option value="CARD">Card</option>
+          <option value="ONLINE">Online</option>
+          <option value="BANK_TRANSFER">Bank Transfer</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closePayModal()">Cancel</button>
+      <button class="btn btn-primary" id="pay-btn" onclick="submitPayment()">Record</button>
+    </div>
+  </div>
+</div>
+
+<script src="script.js"></script>
+<script>
+requireAuth();
+buildSidebar();
+
+const canPlace = hasRole('ADMIN','MANAGER','CASHIER');
+if (!canPlace) document.getElementById('place-btn').style.display = 'none';
+
+let orderLines = [];
+let allProducts = {};
+let payingOrderId = null;
+
+// Load orders
+async function loadOrders(page = 0) {
+  const status   = document.getElementById('f-status').value;
+  const from     = document.getElementById('f-from').value;
+  const to       = document.getElementById('f-to').value;
+  const custId   = document.getElementById('f-customer').value;
+  const tbody    = document.getElementById('orders-table');
+  tbody.innerHTML = '<tr class="loading-row"><td colspan="7"><div class="spinner"></div></td></tr>';
+
+  try {
+    let url = `/orders?page=${page}&size=20`;
+    if (status) url += `&status=${status}`;
+    if (from)   url += `&from=${from}`;
+    if (to)     url += `&to=${to}`;
+    if (custId) url += `&customerId=${custId}`;
+
+    const data = await api(url);
+    document.getElementById('result-count').textContent = data.totalElements + ' orders';
+
+    if (!data.content?.length) {
+      tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="icon">🧾</div><p>No orders found</p></div></td></tr>';
+      return;
+    }
+
+    const allowedNext = {
+      PENDING: ['CONFIRMED','CANCELLED'],
+      CONFIRMED: ['SHIPPED','CANCELLED'],
+      SHIPPED: ['DELIVERED'],
+      DELIVERED: [],
+      CANCELLED: []
+    };
+
+    tbody.innerHTML = data.content.map(o => {
+      const nextStatuses = canPlace ? (allowedNext[o.orderStatus] || []) : [];
+      const statusOpts = nextStatuses.map(s => `<option value="${s}">${s}</option>`).join('');
+      return `
+      <tr>
+        <td class="text-muted">#${o.orderId}</td>
+        <td><strong>${o.customer?.firstName} ${o.customer?.lastName}</strong></td>
+        <td style="white-space:nowrap">${fmtDate(o.orderDate)}</td>
+        <td class="text-muted">${(o.orderItems || []).length || '—'} item(s)</td>
+        <td style="font-weight:600">${money(o.totalAmount)}</td>
+        <td>${statusBadge(o.orderStatus)}</td>
+        <td>
+          <div class="flex-gap">
+            <button class="btn btn-ghost btn-sm" onclick="viewDetail(${o.orderId})">View</button>
+            ${canPlace && nextStatuses.length ? `
+              <select style="font-size:.75rem;padding:3px 6px;border:1px solid var(--gray-200);border-radius:4px"
+                      onchange="changeStatus(${o.orderId}, this.value, this)">
+                <option value="">Move to...</option>${statusOpts}
+              </select>` : ''}
+            ${canPlace && o.orderStatus !== 'CANCELLED' && o.orderStatus !== 'DELIVERED' ? `
+              <button class="btn btn-ghost btn-sm" onclick="openPayModal(${o.orderId}, ${o.totalAmount})">💳 Pay</button>` : ''}
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+
+    renderPagination('ord-pagination', data, 'loadOrders');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="7"><div class="alert alert-error">${e.message}</div></td></tr>`;
+  }
+}
+
+function clearFilters() {
+  ['f-status','f-from','f-to','f-customer'].forEach(id => document.getElementById(id).value = '');
+  loadOrders(0);
+}
+
+// View order detail
+async function viewDetail(orderId) {
+  const card  = document.getElementById('detail-card');
+  const body  = document.getElementById('detail-body');
+  const title = document.getElementById('detail-title');
+  card.style.display = 'block';
+  body.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+  title.textContent = `Order #${orderId}`;
+
+  try {
+    const o = await api('/orders/' + orderId);
+    const payments = await api('/payments/order/' + orderId);
+    const totalPaid = payments.filter(p => p.paymentStatus === 'COMPLETED')
+                              .reduce((s,p) => s + Number(p.amountPaid), 0);
+    const balance = Number(o.totalAmount) - totalPaid;
+
+    const itemsHtml = (o.orderItems || []).map(item => `
+      <tr>
+        <td>${item.product?.productName}</td>
+        <td style="font-family:monospace;font-size:.78rem">${item.product?.skuCode}</td>
+        <td class="text-right">${money(item.unitPrice)}</td>
+        <td class="text-right">${item.quantity}</td>
+        <td class="text-right;font-weight:600">${money(item.lineTotal)}</td>
+      </tr>`).join('');
+
+    const payHtml = payments.length ? payments.map(p => `
+      <tr>
+        <td>${fmtDate(p.paymentDate)}</td>
+        <td>${p.paymentMethod}</td>
+        <td>${money(p.amountPaid)}</td>
+        <td>${statusBadge(p.paymentStatus)}</td>
+      </tr>`).join('') : '<tr><td colspan="4" class="text-muted" style="padding:10px">No payments recorded</td></tr>';
+
+    body.innerHTML = `
+      <div class="two-col" style="margin-bottom:16px">
+        <div>
+          <p class="text-muted">Customer</p>
+          <p><strong>${o.customer?.firstName} ${o.customer?.lastName}</strong></p>
+          <p class="text-muted mt-1">${o.customer?.cityName || ''}</p>
+        </div>
+        <div>
+          <p class="text-muted">Order Date</p>
+          <p><strong>${fmtDate(o.orderDate)}</strong></p>
+          <p class="mt-1">${statusBadge(o.orderStatus)}</p>
+        </div>
+      </div>
+      ${o.remarks ? `<p class="text-muted" style="margin-bottom:12px">Note: ${o.remarks}</p>` : ''}
+      <h3 style="font-size:.85rem;font-weight:600;margin-bottom:8px">Items</h3>
+      <div class="table-wrap" style="margin-bottom:16px">
+        <table>
+          <thead><tr><th>Product</th><th>SKU</th><th class="text-right">Unit Price</th><th class="text-right">Qty</th><th class="text-right">Total</th></tr></thead>
+          <tbody>${itemsHtml}</tbody>
+          <tfoot>
+            <tr style="background:var(--blue-light)">
+              <td colspan="4" style="padding:10px 14px;font-weight:600;color:var(--blue)">Order Total</td>
+              <td class="text-right" style="padding:10px 14px;font-weight:700;color:var(--blue)">${money(o.totalAmount)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <h3 style="font-size:.85rem;font-weight:600;margin-bottom:8px">Payments</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date</th><th>Method</th><th>Amount</th><th>Status</th></tr></thead>
+          <tbody>${payHtml}</tbody>
+        </table>
+      </div>
+      ${balance > 0 ? `<p class="mt-2" style="color:var(--orange);font-weight:500">Balance due: ${money(balance)}</p>` : '<p class="mt-2" style="color:var(--green);font-weight:500">✓ Fully paid</p>'}`;
+
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch(e) {
+    body.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+function closeDetail() {
+  document.getElementById('detail-card').style.display = 'none';
+}
+
+// Status change
+async function changeStatus(orderId, newStatus, selectEl) {
+  if (!newStatus) return;
+  try {
+    await api(`/orders/${orderId}/status`, { method: 'PATCH', body: JSON.stringify({ status: newStatus }) });
+    toast(`Order #${orderId} moved to ${newStatus}`, 'success');
+    loadOrders(0);
+    closeDetail();
+  } catch(e) {
+    toast(e.message, 'error');
+    selectEl.value = '';
+  }
+}
+
+// New Order Modal
+async function openOrderModal() {
+  document.getElementById('order-msg').innerHTML = '';
+  orderLines = [];
+  renderLines();
+
+  try {
+    const [customers, products] = await Promise.all([
+      api('/customers?page=0&size=1000'),
+      api('/products?active=Y&page=0&size=1000')
+    ]);
+
+    const csel = document.getElementById('o-customer');
+    csel.innerHTML = '<option value="">Select customer...</option>'
+      + customers.content.map(c => `<option value="${c.customerId}">${c.firstName} ${c.lastName} — ${c.cityName || ''}</option>`).join('');
+
+    const psel = document.getElementById('o-product');
+    allProducts = {};
+    products.content.forEach(p => { allProducts[p.productId] = p; });
+    psel.innerHTML = '<option value="">Select product...</option>'
+      + products.content.map(p =>
+          `<option value="${p.productId}" data-price="${p.unitPrice}" data-stock="${p.stockQuantity}" data-name="${p.productName}">
+            ${p.productName} · ${money(p.unitPrice)} · Stock: ${p.stockQuantity}
+          </option>`).join('');
+  } catch(e) {
+    toast('Could not load form data: ' + e.message, 'error');
+  }
+
+  document.getElementById('o-remarks').value = '';
+  document.getElementById('order-modal').classList.add('open');
+}
+
+function closeOrderModal() {
+  document.getElementById('order-modal').classList.remove('open');
+}
+
+function addLine() {
+  const sel = document.getElementById('o-product');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt?.value) { toast('Please select a product', 'error'); return; }
+
+  const productId = parseInt(opt.value);
+  if (orderLines.find(l => l.productId === productId)) { toast('Product already added', 'error'); return; }
+  if (parseInt(opt.dataset.stock) <= 0) { toast('This product is out of stock', 'error'); return; }
+
+  orderLines.push({
+    productId,
+    name:      opt.dataset.name,
+    unitPrice: parseFloat(opt.dataset.price),
+    stock:     parseInt(opt.dataset.stock),
+    quantity:  1
+  });
+  renderLines();
+  sel.value = '';
+}
+
+function renderLines() {
+  const container = document.getElementById('order-lines');
+  const totalBox  = document.getElementById('order-total');
+  if (!orderLines.length) { container.innerHTML = ''; totalBox.style.display = 'none'; return; }
+
+  container.innerHTML = `<div class="item-list mt-1 mt-2">${orderLines.map((l, i) => `
+    <div class="item-row">
+      <div>
+        <div class="item-name">${l.name}</div>
+        <div class="item-price">${money(l.unitPrice)} each</div>
+      </div>
+      <input class="qty-field" type="number" min="1" max="${l.stock}" value="${l.quantity}"
+             onchange="setQty(${i}, this.value)"/>
+      <span style="font-weight:600;text-align:right">${money(l.unitPrice * l.quantity)}</span>
+      <button class="close-btn" onclick="removeLine(${i})">✕</button>
+    </div>`).join('')}</div>`;
+
+  const total = orderLines.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
+  totalBox.style.display = 'flex';
+  document.getElementById('total-val').textContent = money(total);
+}
+
+function setQty(i, v) {
+  orderLines[i].quantity = Math.max(1, Math.min(parseInt(v) || 1, orderLines[i].stock));
+  renderLines();
+}
+
+function removeLine(i) { orderLines.splice(i, 1); renderLines(); }
+
+async function placeOrder() {
+  const msg      = document.getElementById('order-msg');
+  const custId   = parseInt(document.getElementById('o-customer').value);
+  const remarks  = document.getElementById('o-remarks').value.trim();
+  msg.innerHTML  = '';
+
+  if (!custId)          { msg.innerHTML = '<div class="alert alert-error">Please select a customer.</div>'; return; }
+  if (!orderLines.length){ msg.innerHTML = '<div class="alert alert-error">Add at least one product.</div>'; return; }
+
+  const btn = document.getElementById('place-order-btn');
+  btn.disabled = true; btn.textContent = 'Placing...';
+
+  try {
+    const order = await api('/orders', {
+      method: 'POST',
+      body: JSON.stringify({
+        customerId: custId,
+        remarks: remarks || null,
+        items: orderLines.map(l => ({ productId: l.productId, quantity: l.quantity }))
+      })
+    });
+    toast(`Order #${order.orderId} placed — Total: ${money(order.totalAmount)}`, 'success');
+    closeOrderModal();
+    loadOrders(0);
+  } catch(e) {
+    msg.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Place Order';
+  }
+}
+
+// Payment Modal
+function openPayModal(orderId, total) {
+  payingOrderId = orderId;
+  document.getElementById('pay-title').textContent = `Payment for Order #${orderId}`;
+  document.getElementById('pay-amount').value = '';
+  document.getElementById('pay-msg').innerHTML = '';
+  document.getElementById('pay-modal').classList.add('open');
+}
+
+function closePayModal() {
+  document.getElementById('pay-modal').classList.remove('open');
+  payingOrderId = null;
+}
+
+async function submitPayment() {
+  const msg    = document.getElementById('pay-msg');
+  const amount = parseFloat(document.getElementById('pay-amount').value);
+  const method = document.getElementById('pay-method').value;
+  msg.innerHTML = '';
+
+  if (!amount || amount <= 0) { msg.innerHTML = '<div class="alert alert-error">Enter a valid amount.</div>'; return; }
+
+  const btn = document.getElementById('pay-btn');
+  btn.disabled = true; btn.textContent = 'Saving...';
+
+  try {
+    await api('/payments', {
+      method: 'POST',
+      body: JSON.stringify({ orderId: payingOrderId, amountPaid: amount, paymentMethod: method })
+    });
+    toast(`Payment of ${money(amount)} recorded`, 'success');
+    closePayModal();
+    loadOrders(0);
+  } catch(e) {
+    msg.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Record';
+  }
+}
+
+// Handle pre-filter from customer page link
+const params = new URLSearchParams(location.search);
+if (params.get('customerId')) {
+  document.getElementById('f-customer').value = params.get('customerId');
+}
+
+loadOrders(0);
+</script>
+</body>
+</html>
